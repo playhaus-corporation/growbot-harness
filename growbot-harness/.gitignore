@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.pyright/
+
+.DS_Store
+.streamlit/secrets.toml
+
+sample_certificate.json
+anchored_certificate.json
+*.log
