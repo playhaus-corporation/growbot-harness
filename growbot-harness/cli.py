@@ -15,8 +15,8 @@ import gate
 import pinata
 import register as story_register
 
-load_dotenv()
-
+ENV_PATH = Path(__file__).with_name(".env")
+load_dotenv(dotenv_path=ENV_PATH)
 DEFAULT_SOURCE_PATH = Path(__file__).parent / "samples" / "source_case_study_q1_2026.txt"
 
 DEFAULT_LICENSE_TEXT = f"paid social; US; through {date.today().year + 1}-{date.today().month}-{date.today().day}; no derivative claims"
@@ -196,6 +196,8 @@ def _build_nft_metadata(cert: dict) -> dict:
 
 def _explorer_url(tx_hash: str) -> str:
     base = os.environ.get("STORY_EXPLORER", "https://aeneid.storyscan.xyz").rstrip("/")
+    if not tx_hash.startswith("0x"):
+        tx_hash = "0x" + tx_hash
     return f"{base}/tx/{tx_hash}"
 
 
@@ -226,6 +228,16 @@ def _write_json(path: Path, obj: dict) -> None:
         f.write("\n")
 
 
+def _anthropic_client():
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            f"missing ANTHROPIC_API_KEY; add it to {ENV_PATH} or export it before running cli.py"
+        )
+    anthropic = __import__("anthropic")
+    return anthropic.Anthropic(api_key=api_key)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the growbot gate, then mint/register admissible ad copy on Story."
@@ -247,8 +259,7 @@ def main() -> int:
     claims_input = [
         {"claimId": asset_id, "claimText": ad_text, "sourceSpan": source_span}
     ]
-    anthropic = __import__("anthropic")
-    gate_result = gate.run_gate(claims_input, judge=gate.ClaudeJudge(anthropic.Anthropic()))
+    gate_result = gate.run_gate(claims_input, judge=gate.ClaudeJudge(_anthropic_client()))
 
     if gate_result["verdict"]["result"] != "ADMISSIBLE":
         _print_blocked(gate_result)

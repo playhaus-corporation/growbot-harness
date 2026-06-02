@@ -62,6 +62,7 @@ class ClaudeJudge:
 
     def __init__(self, client, model: str = DEFAULT_MODEL):
         self.client, self.model = client, model
+        self.last_usage = None
 
     def entails(self, source: str, claim: str):
         import json
@@ -69,6 +70,7 @@ class ClaudeJudge:
         msg = self.client.messages.create(
             model=self.model, max_tokens=400, temperature=0,
             messages=[{"role": "user", "content": prompt}])
+        self.last_usage = getattr(msg, "usage", None)
         data = json.loads("".join(b.text for b in msg.content if b.type == "text"))
         return bool(data["entailed"]), float(data["confidence"]), data["reason"]
 

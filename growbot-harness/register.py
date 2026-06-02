@@ -51,6 +51,8 @@ def register(cert, ip_cid, nft_cid, nft_hash, pil_terms):
 
 def _explorer_url(tx_hash):
     base = os.environ.get("STORY_EXPLORER", "https://aeneid.storyscan.xyz").rstrip("/")
+    if not tx_hash.startswith("0x"):
+        tx_hash = "0x" + tx_hash
     return f"{base}/tx/{tx_hash}"
 
 
