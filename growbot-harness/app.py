@@ -10,6 +10,7 @@ verification layers against the record. Run with:
 anchor is a public Storyscan read. No layer routes through the agency.
 """
 from pathlib import Path
+from datetime import date
 import json
 import os
 
@@ -22,6 +23,7 @@ import verify
 ENV_PATH = Path(__file__).with_name(".env")
 load_dotenv(dotenv_path=ENV_PATH)
 STORYSCAN_TX = "https://aeneid.storyscan.xyz/tx/"
+DEFAULT_LICENSE_TEXT = f"paid social; US; through {date.today().year + 1}-{date.today().month}-{date.today().day}; no derivative claims"
 # (key, label, blurb, detail_key) — integrity rides inside the inputs report
 # (full_verify exposes it as inputs["integrityOk"]), so it has no own detail block.
 LAYERS = [
@@ -48,6 +50,109 @@ def run_claude_gate(claim_id: str, claim_text: str, source_span: str) -> tuple[d
         judge=judge,
     )
     return result, judge.last_usage
+
+
+def method_fingerprint() -> dict:
+    return {
+        "model": gate.ClaudeJudge.DEFAULT_MODEL,
+        "promptTemplateHash": "sha256:" + certificate.sha256_text(gate.ClaudeJudge.PROMPT),
+        "temperature": 0,
+        "embeddingModel": None,
+        "tolerances": {"entailment": "judge-calibrated", "c2NumericTolerance": 0.08},
+    }
+
+
+def approver_address() -> str:
+    if os.environ.get("APPROVER_ADDRESS"):
+        return os.environ["APPROVER_ADDRESS"]
+    if os.environ.get("STORY_PRIVATE_KEY"):
+        try:
+            Web3 = __import__("web3", fromlist=["Web3"]).Web3
+            return Web3().eth.account.from_key(os.environ["STORY_PRIVATE_KEY"]).address
+        except Exception:
+            pass
+    return "0xDEMO00000000000000000000000000000000bEEF"
+
+
+def add_display_metadata(cert: dict, *, ad_text: str, asset_id: str) -> dict:
+    cert.update(
+        {
+            "title": f"growbot admissible ad claim: {asset_id}",
+            "description": "AI-generated ad copy passed through the growbot admissibility gate.",
+            "creators": [
+                {
+                    "name": "Playhaus",
+                    "address": cert["approval"]["approver"],
+                    "contributionPercent": 100,
+                    "description": "Agency of record; growbot operator",
+                }
+            ],
+            "mediaHash": "0x" + certificate.sha256_text(ad_text),
+            "mediaType": "text/plain",
+            "tags": ["advertising", "substantiated", "growbot", "paid-social"],
+        }
+    )
+    return cert
+
+
+def build_certificate_from_gate(
+    *,
+    asset_id: str,
+    claim_text: str,
+    source_name: str,
+    source_text: str,
+    gate_result: dict,
+) -> dict:
+    cert = certificate.build_certificate(
+        asset_text=claim_text,
+        asset_id=asset_id,
+        media_type="text/plain",
+        sources=[
+            {
+                "name": source_name,
+                "sha256": certificate.sha256_text(source_text),
+                "uri": None,
+            }
+        ],
+        method=method_fingerprint(),
+        claims=gate_result["claims"],
+        license_terms={"terms": DEFAULT_LICENSE_TEXT},
+        approver=approver_address(),
+    )
+    add_display_metadata(cert, ad_text=claim_text, asset_id=asset_id)
+    certificate.finalize(cert)
+    return cert
+
+
+def cert_json(cert: dict) -> str:
+    return json.dumps(cert, indent=2, ensure_ascii=False) + "\n"
+
+
+def mint_certificate_on_story(cert: dict, *, asset_id: str) -> dict:
+    import cli as cli_helpers
+    import pinata
+    import register as story_register
+
+    cli_helpers._ensure_live_env()
+    nft_metadata = cli_helpers._build_nft_metadata(cert)
+    nft_hash = cli_helpers._json_sha256(nft_metadata)
+    cert_cid = pinata.pin_json(cert, f"{asset_id}-admissibility-certificate.json")
+    nft_cid = pinata.pin_json(nft_metadata, f"{asset_id}-nft-metadata.json")
+    pil_terms = cli_helpers._load_pil_terms(None)
+    anchored_cert, resp = story_register.register(
+        cert,
+        cert_cid,
+        nft_cid,
+        nft_hash,
+        pil_terms,
+    )
+    return {
+        "cert": anchored_cert,
+        "response": resp,
+        "cert_cid": cert_cid,
+        "nft_cid": nft_cid,
+        "nft_hash": nft_hash,
+    }
 
 
 def usage_text(usage: object) -> str | None:
@@ -134,7 +239,15 @@ with gate_tab:
     default_id, default_claim, default_source = sample_options[sample_id]
     claim_id = st.text_input("Claim ID", value=default_id)
     claim_text = st.text_area("Claim", value=default_claim, height=100)
-    source_span = st.text_area("Source span", value=default_source, height=120)
+    source_name = st.text_input("Source name", value="source.txt")
+    source_span = st.text_area("Source / evidence text", value=default_source, height=120)
+    mint_live = st.checkbox(
+        "Mint/register on Story if admissible",
+        value=False,
+        help="Runs Pinata pinning and signs a Story Aeneid testnet transaction with STORY_PRIVATE_KEY.",
+    )
+    if mint_live:
+        st.warning("Live mint is enabled. This will create a new Story testnet token if the gate passes.")
 
     if st.button("Run Gate with Claude", type="primary", disabled=not (claim_text.strip() and source_span.strip())):
         try:
@@ -145,8 +258,50 @@ with gate_tab:
 
         if gate_result["verdict"]["result"] == "ADMISSIBLE":
             st.success("ADMISSIBLE")
+            cert = build_certificate_from_gate(
+                asset_id=claim_id,
+                claim_text=claim_text,
+                source_name=source_name or "source.txt",
+                source_text=source_span,
+                gate_result=gate_result,
+            )
+            st.subheader("Certificate")
+            st.write(f"Certificate hash: `{cert['header']['integrity']['sha256']}`")
+            st.write(f"Approver wallet: `{cert['approval']['approver']}`")
+            st.write(f"Asset hash: `{cert['subject']['sha256']}`")
+
+            if mint_live:
+                with st.spinner("Pinning metadata and minting/registering on Story Aeneid..."):
+                    try:
+                        minted = mint_certificate_on_story(cert, asset_id=claim_id)
+                    except Exception as exc:
+                        st.error(f"Story mint/register failed: {exc}")
+                        st.stop()
+
+                cert = minted["cert"]
+                resp = minted["response"]
+                tx_hash = resp.get("tx_hash", "")
+                tx_url = storyscan_tx_url({"txHash": tx_hash})
+                st.success("Mint/register complete")
+                st.write(f"IP ID: `{resp.get('ip_id')}`")
+                st.write(f"Token ID: `{resp.get('token_id')}`")
+                st.write(f"Transaction ID: `{tx_hash}`")
+                st.write(f"Certificate IPFS URI: `{minted['cert_cid']}`")
+                st.write(f"NFT metadata IPFS URI: `{minted['nft_cid']}`")
+                if tx_url:
+                    st.markdown(f"🔗 [View transaction on Storyscan]({tx_url})")
+            else:
+                st.info("Gate only: no token was minted. Enable live mint to pin metadata and register on Story.")
+
+            st.download_button(
+                "Download certificate JSON",
+                data=cert_json(cert),
+                file_name=f"{claim_id}-certificate.json",
+                mime="application/json",
+            )
         else:
             st.error("BLOCKED")
+            st.info("No certificate was created and no token was minted.")
 
         usage_summary = usage_text(usage)
         if usage_summary:
