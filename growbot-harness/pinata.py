@@ -1,4 +1,3 @@
-import json
 import os
 
 import requests
@@ -17,8 +16,7 @@ def pin_json(obj, name):
     return "ipfs://" + r.json()["IpfsHash"]
 
 if __name__ == "__main__":
-    with open("examples/story_registration.json", "r") as f:
-        cert = json.load(f)
-    cid = pin_json(cert, "examples/story_registration.json")
+    # Smoke test: needs PINATA_JWT + network; pins a trivial object, spends nothing.
+    cid = pin_json({"growbot": "pinata smoke test"}, "growbot-pinata-smoke-test.json")
     print(cid)
     print(f"https://gateway.pinata.cloud/ipfs/{cid}")

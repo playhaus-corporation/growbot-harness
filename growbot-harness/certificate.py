@@ -81,10 +81,18 @@ def sha256_text(text: str) -> str:
     return sha256_bytes(normalized.encode("utf-8"))
 
 
+def sha256_text_normalized(text: str) -> str:
+    """
+    Hash text the way the verifier recomputes it: LF-normalized and stripped.
+    This is the single normalization the asset/source hashes MUST use, so that
+    build (certificate) and verify (input recompute) agree byte-for-byte.
+    """
+    return sha256_text(text.replace("\r\n", "\n").replace("\r", "\n").strip())
+
+
 def sha256_declared_text_bytes(data: bytes) -> str:
     """Hash text input bytes the same way cli.py reads ad and source text."""
-    text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n").strip()
-    return sha256_text(text)
+    return sha256_text_normalized(data.decode("utf-8"))
 
 
 def _canonical_bytes(cert: dict) -> bytes:
@@ -197,7 +205,7 @@ def build_certificate(*, asset_text: str, asset_id: str, media_type: str,
         "subject": {
             "assetId": asset_id,
             "mediaType": media_type,
-            "sha256": sha256_text(asset_text),
+            "sha256": sha256_text_normalized(asset_text),
             "contentUri": None,
         },
         "sources": sources,
@@ -249,7 +257,7 @@ if __name__ == "__main__":
     SOURCE = "Case study, Q1 2026: client paid-social CAC fell 31% over the engagement.\n"
     ASSET = "Our clients see a 30%+ reduction in customer acquisition cost.\n"
 
-    sources = [{"name": "case-study-q1-2026.md", "sha256": sha256_text(SOURCE), "uri": None}]
+    sources = [{"name": "case-study-q1-2026.md", "sha256": sha256_text_normalized(SOURCE), "uri": None}]
     claims = [{
         "claimId": "cl-1",
         "claimText": "Our clients see a 30%+ reduction in customer acquisition cost.",

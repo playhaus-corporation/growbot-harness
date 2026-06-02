@@ -149,7 +149,7 @@ if __name__ == "__main__":
         good = [r for r in results if r["claimResult"] == "ADMISSIBLE"][0]
         cert = cert_mod.build_certificate(
             asset_text=good["claimText"], asset_id="ad-demo", media_type="text/plain",
-            sources=[{"name": "source", "sha256": cert_mod.sha256_text(good["sourceRef"]["span"]), "uri": None}],
+            sources=[{"name": "source", "sha256": cert_mod.sha256_text_normalized(good["sourceRef"]["span"]), "uri": None}],
             method={"model": "lexical-standin", "promptTemplateHash": "sha256:demo", "temperature": 0,
                     "embeddingModel": None, "tolerances": {}},
             claims=[good],

@@ -87,7 +87,7 @@ def add_display_metadata(cert: dict, *, ad_text: str, asset_id: str) -> dict:
                     "description": "Agency of record; growbot operator",
                 }
             ],
-            "mediaHash": "0x" + certificate.sha256_text(ad_text),
+            "mediaHash": "0x" + certificate.sha256_text_normalized(ad_text),
             "mediaType": "text/plain",
             "tags": ["advertising", "substantiated", "growbot", "paid-social"],
         }
@@ -110,7 +110,7 @@ def build_certificate_from_gate(
         sources=[
             {
                 "name": source_name,
-                "sha256": certificate.sha256_text(source_text),
+                "sha256": certificate.sha256_text_normalized(source_text),
                 "uri": None,
             }
         ],

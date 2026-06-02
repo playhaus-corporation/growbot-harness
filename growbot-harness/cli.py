@@ -22,11 +22,18 @@ DEFAULT_SOURCE_PATH = Path(__file__).parent / "samples" / "source_case_study_q1_
 DEFAULT_LICENSE_TEXT = f"paid social; US; through {date.today().year + 1}-{date.today().month}-{date.today().day}; no derivative claims"
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
-# ROYALTY_POLICY_LAP is the Ethereum address of the royalty policy smart contract for the Legal Access Protocol (LAP).
-ROYALTY_POLICY_LAP = "0xBe54FB168b3c982b7AaE60dB6CF75Bd8447b390E"
-
-# WIP_CURRENCY is the placeholder ("work in progress") ERC-20 token address representing currency for settlement or on-chain transactions.
-WIP_CURRENCY = "0x1514000000000000000000000000000000000000"
+# Story Aeneid (chainId 1315) protocol addresses. The defaults are the confirmed
+# Aeneid deployment values; override via .env to retarget without a code change.
+# These are published by Story upstream (Story docs + the protocol-periphery-v1
+# / protocol-core-v1 repos), not in this project.
+#   ROYALTY_POLICY_LAP — RoyaltyPolicyLAP (Liquid Absolute Percentage) contract.
+#   WIP_CURRENCY        — Wrapped IP (WIP) ERC-20, the PIL settlement currency.
+ROYALTY_POLICY_LAP = os.environ.get(
+    "ROYALTY_POLICY_LAP", "0xBe54FB168b3c982b7AaE60dB6CF75Bd8447b390E"
+)
+WIP_CURRENCY = os.environ.get(
+    "WIP_CURRENCY", "0x1514000000000000000000000000000000000000"
+)
 
 
 def _read_text(path: Path) -> str:
@@ -173,7 +180,7 @@ def _add_display_metadata(cert: dict, *, ad_text: str, asset_id: str) -> dict:
                     "description": "Agency of record; growbot operator",
                 }
             ],
-            "mediaHash": "0x" + certificate.sha256_text(ad_text),
+            "mediaHash": "0x" + certificate.sha256_text_normalized(ad_text),
             "mediaType": "text/plain",
             "tags": ["advertising", "substantiated", "growbot", "paid-social"],
         }
@@ -272,7 +279,7 @@ def main() -> int:
         sources=[
             {
                 "name": source_name,
-                "sha256": certificate.sha256_text(source_span),
+                "sha256": certificate.sha256_text_normalized(source_span),
                 "uri": None,
             }
         ],
