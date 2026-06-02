@@ -23,7 +23,6 @@ legal compliance.
 - `cli.py` wires the gate, certificate, Pinata, and Story registration flow.
 - `app.py` provides a Streamlit verifier demo.
 - `samples/` contains small ad/source fixtures.
-- `examples/` contains Story metadata and registration examples.
 
 ## Setup
 
@@ -38,11 +37,20 @@ Fill in `.env` only for flows that need external services. Keep `.env` private.
 
 ## Offline Checks
 
-These checks do not mint, pin, or spend testnet funds.
+These run with no keys and no network:
 
 ```bash
 python certificate.py
 python gate.py
+```
+
+## Gate Dry Run (no pin, no mint)
+
+`--dry-run` runs the real Claude gate (so it needs `ANTHROPIC_API_KEY` and makes a
+network call) and prepares the certificate + NFT metadata, but does not pin to
+IPFS or sign any Story transaction:
+
+```bash
 python cli.py samples/s1.txt --dry-run --out /tmp/growbot-cert.json
 ```
 
