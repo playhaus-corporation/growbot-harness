@@ -1,8 +1,51 @@
-# growbot harness
+# Growbot Harness
 
-Growbot is a Python demo that checks ad claims against source data,
-issues a hash-bound admissibility certificate for claims that pass, and can anchor
-that certificate as Story Protocol IP metadata.
+Growbot checks advertising claims against their source data, issues a
+hash-bound **admissibility certificate** for the claims that pass, and anchors
+that certificate as owned, tamper-evident IP on Story Protocol. Input goes in;
+a verifiable, ownable proof comes out.
+
+## Both halves are load-bearing
+
+Growbot is not an AI tool with a chain bolted on, nor a ledger with an AI
+bolted on. Each half does work the other cannot, and removing either one strips
+the system of its core utility:
+
+- **Remove the AI and there is nothing to verify.** Extraction
+  (`verify/extract.py`) turns unstructured ad copy and source documents into the
+  normalized, comparable numbers the gate operates on. Without it the
+  deterministic gate is an inert rules engine with no operands.
+- **Remove the blockchain and there is nothing to trust.** Local recomputation
+  proves a certificate is *correct given its inputs*; it cannot prove the
+  certificate is *authentic, unaltered, first-in-time, or owned* — anyone can
+  fabricate a self-consistent certificate offline. At mint, the certificate's
+  `sha256` is committed on-chain as the `bytes32 metadataHash` of Story
+  Protocol's `MetadataURISet` event, bound to a non-repudiable owner (`ipId`)
+  and a block timestamp. `cert_verify.py` re-reads that event and asserts the
+  on-chain hash equals the local certificate hash. Remove the anchor and the
+  certificate degrades to a forgeable, unowned JSON file.
+
+These are two separate guarantees, and they are deliberately inseparable:
+
+| Guarantee | Established by | Answers |
+|---|---|---|
+| **Correctness** | offline deterministic verifier (`verify/deterministic.py`) | "Does the source license this claim?" |
+| **Provenance** | on-chain `bytes32` commitment to the cert `sha256` (Story `MetadataURISet`), re-read and checked by `cert_verify.py` | "Is this certificate authentic, unaltered, owned, and first-in-time?" |
+
+You need both to trust a claim. Recomputation without provenance is an
+unsigned assertion; provenance without recomputation is a sealed black box.
+Growbot refuses to be either — and it **never seals what it cannot
+deterministically verify** (see the three-outcome design and adversarial trap
+suite below).
+
+## Track and frameworks
+
+- **Intellectual Property** — the certificate is a tokenized, licensable IP
+  asset with verifiable lineage: claim → source → rule version → owner,
+  registered on Story Protocol.
+- **Coherence discipline** — the gate is built around SC-AS *verification
+  discipline*: deterministic checks, abstention over guessing, low-variance
+  verdicts. This is an applied admissibility check, not canonical SC-AS.
 
 The verifier is designed around "test, don't trust":
 
