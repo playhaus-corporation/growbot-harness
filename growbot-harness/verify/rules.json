@@ -1,0 +1,41 @@
+{
+  "ruleVersion": "qrt-0.1",
+  "_comment": "Per-metric verification config. polarity says which direction is an overstatement; precision is the canonical least-significant-digit decimal count, from which the asymmetric rounding_tol is derived. Nothing in the core hard-codes a metric — add one here, not in code.",
+  "metrics": {
+    "cac_reduction_pct": {
+      "polarity": "HIGHER_IS_BETTER",
+      "unit": "%",
+      "precision": 0,
+      "aliases": ["cac", "customer acquisition cost", "acquisition cost"],
+      "periodConversions": {}
+    },
+    "annual_savings_usd": {
+      "polarity": "HIGHER_IS_BETTER",
+      "unit": "$/year",
+      "precision": 0,
+      "aliases": ["saves", "savings", "save"],
+      "periodConversions": {"$/month": 12, "$/mo": 12, "$/week": 52, "$/day": 365}
+    },
+    "cost_per_lead_usd": {
+      "polarity": "LOWER_IS_BETTER",
+      "unit": "$/lead",
+      "precision": 0,
+      "aliases": ["per lead", "cost per lead", "/lead"],
+      "periodConversions": {}
+    },
+    "clients_count": {
+      "polarity": "HIGHER_IS_BETTER",
+      "unit": "clients",
+      "precision": 0,
+      "aliases": ["clients"],
+      "periodConversions": {}
+    },
+    "customers_count": {
+      "polarity": "HIGHER_IS_BETTER",
+      "unit": "customers",
+      "precision": 0,
+      "aliases": ["customers"],
+      "periodConversions": {}
+    }
+  }
+}

@@ -153,7 +153,7 @@ python register.py \
 
 ## 8) Verify anchored certificates
 
-Programmatic verification lives in `verify.py` and `certificate.py`.
+Programmatic verification lives in `cert_verify.py` and `certificate.py`.
 
 - Integrity: canonical cert hash recompute
 - Inputs: asset/source hash recompute from user-held bytes

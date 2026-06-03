@@ -1,13 +1,19 @@
 """
-app.py · growbot verify page (demo)
-===================================
-Paste an asset + its sources, load its certificate, and re-test all three
-verification layers against the record. Run with:
+app.py · growbot gate + verify page (demo)
+==========================================
+Two tabs:
 
-    streamlit run app.py
+  Run Gate          extract (N=3) -> agreement gate -> normalize -> check_claim, the
+                    deterministic admissibility verdict. The LLM only extracts numbers;
+                    the verdict is pure arithmetic (verify/). Build a cert and, if every
+                    claim is ADMISSIBLE, optionally mint/register on Story.
+  Verify Certificate  re-test a finished cert against reality: integrity + inputs are
+                    local stdlib recomputes; the anchor is a public Storyscan read.
 
-"Test, don't trust": integrity + inputs are local stdlib recomputes; the
-anchor is a public Storyscan read. No layer routes through the agency.
+Run with:  streamlit run app.py
+
+"Test, don't trust": no layer routes through the agency, and there is no LLM in the
+judgment — the refusal you see on an overstatement is the arithmetic, on screen.
 """
 from pathlib import Path
 from datetime import date
@@ -16,14 +22,21 @@ import os
 
 from dotenv import load_dotenv
 import streamlit as st
+
 import certificate
-import gate
-import verify
+import cert_verify
+from verify import samples as verify_samples
+from verify.config import Config
+from verify.extract import ClaudeJudge as ExtractionJudge
+from verify.extract import LexicalJudge
+from verify.run import verify_claim
 
 ENV_PATH = Path(__file__).with_name(".env")
 load_dotenv(dotenv_path=ENV_PATH)
 STORYSCAN_TX = "https://aeneid.storyscan.xyz/tx/"
 DEFAULT_LICENSE_TEXT = f"paid social; US; through {date.today().year + 1}-{date.today().month}-{date.today().day}; no derivative claims"
+CONFIG = Config.load()
+
 # (key, label, blurb, detail_key) — integrity rides inside the inputs report
 # (full_verify exposes it as inputs["integrityOk"]), so it has no own detail block.
 LAYERS = [
@@ -32,33 +45,67 @@ LAYERS = [
     ("anchor",    "Anchor",    "cert hash + CID are what CoreMetadataModule put on-chain", "anchor"),
 ]
 
+# §5 cert fields, in the order a reviewer eyeballs "right numbers?" in two seconds.
+RECORD_FIELDS = [
+    ("metric", "metric"), ("polarity", "polarity"),
+    ("claim_value", "claim value"), ("claim_comparator", "comparator"), ("unit", "unit"),
+    ("extraction_agreement", "extraction agreement"),
+    ("source_value", "source value"), ("source_kind", "source kind"),
+    ("rule_id", "rule"), ("ruleVersion", "rule version"),
+]
+
 
 def anthropic_client():
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError(
-            f"missing ANTHROPIC_API_KEY; add it to {ENV_PATH} or export it before running Streamlit"
+            f"missing ANTHROPIC_API_KEY; add it to {ENV_PATH}, export it, or use Offline mode"
         )
     anthropic = __import__("anthropic")
     return anthropic.Anthropic(api_key=api_key)
 
 
-def run_claude_gate(claim_id: str, claim_text: str, source_span: str) -> tuple[dict, object]:
-    judge = gate.ClaudeJudge(anthropic_client())
-    result = gate.run_gate(
-        [{"claimId": claim_id, "claimText": claim_text, "sourceSpan": source_span}],
-        judge=judge,
-    )
-    return result, judge.last_usage
+def make_judge(offline: bool):
+    """LexicalJudge (deterministic, no key) offline; ClaudeJudge (extraction-only) live."""
+    return LexicalJudge(CONFIG) if offline else ExtractionJudge(anthropic_client(), CONFIG)
 
 
-def method_fingerprint() -> dict:
+def method_fingerprint(judge, config: Config) -> dict:
+    """Records the extraction read + the rule version so the verdict is reproducible."""
+    prompt = getattr(judge, "PROMPT", "")
     return {
-        "model": gate.ClaudeJudge.DEFAULT_MODEL,
-        "promptTemplateHash": "sha256:" + certificate.sha256_text(gate.ClaudeJudge.PROMPT),
-        "temperature": 0,
+        "model": getattr(judge, "model", None) or "lexical-standin (offline)",
+        "promptTemplateHash": ("sha256:" + certificate.sha256_text(prompt)) if prompt else "sha256:none",
+        "temperature": getattr(judge, "temperature", 0),
         "embeddingModel": None,
-        "tolerances": {"entailment": "judge-calibrated", "c2NumericTolerance": 0.08},
+        "tolerances": {
+            "ruleVersion": config.rule_version,
+            "policy": "asymmetric rounding; half least-significant-digit; conservative direction only",
+        },
+    }
+
+
+def cert_claim_entry(asset_id: str, claim_text: str, source_name: str, result: dict) -> dict:
+    """Per-claim cert entry: §5 deterministic-verification fields + claimResult."""
+    return {
+        "claimId": asset_id,
+        "claimText": claim_text,
+        "sourceRef": {"name": source_name, "span": result["source_span"]},
+        "metric": result["metric"],
+        "polarity": result["polarity"],
+        "claim_value": result["claim_value"],
+        "claim_comparator": result["claim_comparator"],
+        "unit": result["unit"],
+        "extraction_agreement": result["extraction_agreement"],
+        "source_value": result["source_value"],
+        "source_kind": result["source_kind"],
+        "source_span": result["source_span"],
+        "normalized_comparison": result["normalized_comparison"],
+        "rule_id": result["rule_id"],
+        "ruleVersion": result["ruleVersion"],
+        "result": result["result"],
+        "reason": result["reason"],
+        "claimResult": result["result"],   # build_certificate sums on this
     }
 
 
@@ -95,27 +142,21 @@ def add_display_metadata(cert: dict, *, ad_text: str, asset_id: str) -> dict:
     return cert
 
 
-def build_certificate_from_gate(
-    *,
-    asset_id: str,
-    claim_text: str,
-    source_name: str,
-    source_text: str,
-    gate_result: dict,
+def build_certificate_from_result(
+    *, asset_id: str, claim_text: str, source_name: str, source_text: str,
+    result: dict, judge,
 ) -> dict:
     cert = certificate.build_certificate(
         asset_text=claim_text,
         asset_id=asset_id,
         media_type="text/plain",
-        sources=[
-            {
-                "name": source_name,
-                "sha256": certificate.sha256_text_normalized(source_text),
-                "uri": None,
-            }
-        ],
-        method=method_fingerprint(),
-        claims=gate_result["claims"],
+        sources=[{
+            "name": source_name,
+            "sha256": certificate.sha256_text_normalized(source_text),
+            "uri": None,
+        }],
+        method=method_fingerprint(judge, CONFIG),
+        claims=[cert_claim_entry(asset_id, claim_text, source_name, result)],
         license_terms={"terms": DEFAULT_LICENSE_TEXT},
         approver=approver_address(),
     )
@@ -139,13 +180,7 @@ def mint_certificate_on_story(cert: dict, *, asset_id: str) -> dict:
     cert_cid = pinata.pin_json(cert, f"{asset_id}-admissibility-certificate.json")
     nft_cid = pinata.pin_json(nft_metadata, f"{asset_id}-nft-metadata.json")
     pil_terms = cli_helpers._load_pil_terms(None)
-    anchored_cert, resp = story_register.register(
-        cert,
-        cert_cid,
-        nft_cid,
-        nft_hash,
-        pil_terms,
-    )
+    anchored_cert, resp = story_register.register(cert, cert_cid, nft_cid, nft_hash, pil_terms)
     return {
         "cert": anchored_cert,
         "response": resp,
@@ -155,14 +190,14 @@ def mint_certificate_on_story(cert: dict, *, asset_id: str) -> dict:
     }
 
 
-def usage_text(usage: object) -> str | None:
-    if usage is None:
+def usage_text(usage) -> str | None:
+    if not usage:
         return None
-    input_tokens = getattr(usage, "input_tokens", None)
-    output_tokens = getattr(usage, "output_tokens", None)
-    if input_tokens is None and output_tokens is None:
-        return str(usage)
-    return f"input tokens: {input_tokens or 0}; output tokens: {output_tokens or 0}"
+    if isinstance(usage, dict):
+        return (f"input tokens: {usage.get('input_tokens', 0)}; "
+                f"output tokens: {usage.get('output_tokens', 0)} "
+                f"across {usage.get('calls', 0)} extraction calls")
+    return str(usage)
 
 
 def passed(result: dict, layer: str) -> bool:
@@ -180,6 +215,19 @@ def storyscan_tx_url(anchor: dict) -> str | None:
             tx_hash = "0x" + tx_hash
         return STORYSCAN_TX + tx_hash
     return anchor.get("explorerUrl")
+
+
+def ipfs_gateway_url(uri: str) -> str | None:
+    """Turn ipfs://CID[/path] into a browser-viewable gateway URL."""
+    uri = (uri or "").strip()
+    if not uri:
+        return None
+    if uri.startswith("http://") or uri.startswith("https://"):
+        return uri
+    if not uri.startswith("ipfs://"):
+        return None
+    gateway = os.environ.get("PINATA_GATEWAY", "https://gateway.pinata.cloud/ipfs/").rstrip("/") + "/"
+    return gateway + uri[len("ipfs://") :]
 
 
 def certificate_sources(cert: dict, uploaded_files) -> tuple[dict[str, bytes], list[str]]:
@@ -225,45 +273,76 @@ def certificate_sources(cert: dict, uploaded_files) -> tuple[dict[str, bytes], l
     return sources, notes
 
 
+def render_record(result: dict) -> None:
+    """The human-legible extraction record + the arithmetic that produced the verdict."""
+    st.code(result["normalized_comparison"], language=None)
+    cols = st.columns(2)
+    for i, (key, label) in enumerate(RECORD_FIELDS):
+        cols[i % 2].markdown(f"**{label}:** `{result.get(key)}`")
+    st.caption(f"source span — {result['source_span']}")
+    st.caption(f"reason — {result['reason']}")
+
+
 st.set_page_config(page_title="growbot · verify", page_icon="✅")
 st.title("growbot — gate and verify")
-st.caption("Test, don't trust. Integrity and inputs are recomputed locally; "
-           "the anchor is read from a public explorer. None of it trusts the agency.")
+st.caption("Test, don't trust. The verdict is pure arithmetic over extracted numbers — "
+           "no LLM in the judgment — and verification never routes through the agency.")
 
 gate_tab, verify_tab = st.tabs(["Run Gate", "Verify Certificate"])
 
 with gate_tab:
     sample_options = {"custom": ("custom", "", "")}
-    sample_options.update({claim_id: (claim_id, claim, source) for claim_id, claim, source, _expected in gate.SAMPLES})
-    sample_id = st.selectbox("Bundled sample", list(sample_options), index=list(sample_options).index("s3"))
+    sample_options.update({sid: (sid, claim, source) for sid, (claim, source, _exp, _rule) in verify_samples.SAMPLES.items()})
+    sample_id = st.selectbox("Bundled sample", list(sample_options), index=list(sample_options).index("s3"),
+                             help="s3 is the hero: 'up to 50%' against a 30% average → INADMISSIBLE.")
     default_id, default_claim, default_source = sample_options[sample_id]
     claim_id = st.text_input("Claim ID", value=default_id)
     claim_text = st.text_area("Claim", value=default_claim, height=100)
     source_name = st.text_input("Source name", value="source.txt")
     source_span = st.text_area("Source / evidence text", value=default_source, height=120)
+
+    offline = st.checkbox(
+        "Offline (deterministic LexicalJudge — no API key, no network)",
+        value=True,
+        help="On: regex/parse extraction, fully reproducible. Off: Claude does the N=3 extraction (records only, never a verdict).",
+    )
     mint_live = st.checkbox(
         "Mint/register on Story if admissible",
         value=False,
         help="Runs Pinata pinning and signs a Story Aeneid testnet transaction with STORY_PRIVATE_KEY.",
     )
     if mint_live:
-        st.warning("Live mint is enabled. This will create a new Story testnet token if the gate passes.")
+        st.warning("Live mint is enabled. This will create a new Story testnet token if every claim is ADMISSIBLE.")
 
-    if st.button("Run Gate with Claude", type="primary", disabled=not (claim_text.strip() and source_span.strip())):
+    run_label = "Run Gate (offline)" if offline else "Run Gate with Claude"
+    if st.button(run_label, type="primary", disabled=not (claim_text.strip() and source_span.strip())):
         try:
-            gate_result, usage = run_claude_gate(claim_id, claim_text, source_span)
+            judge = make_judge(offline)
+            result = verify_claim(claim_text, source_span, judge, config=CONFIG)
         except Exception as exc:
-            st.error(f"Claude gate failed: {exc}")
+            st.error(f"Gate failed: {exc}")
             st.stop()
 
-        if gate_result["verdict"]["result"] == "ADMISSIBLE":
-            st.success("ADMISSIBLE")
-            cert = build_certificate_from_gate(
+        verdict = result["result"]
+
+        if verdict == "ADMISSIBLE":
+            st.success("ADMISSIBLE — the source deterministically licenses this claim.")
+        elif verdict == "INADMISSIBLE":
+            st.error("INADMISSIBLE — the claim is more aggressive than the source supports. Mint refused.")
+        else:
+            st.warning("NEEDS_REVIEW — the checker abstains and routes to a human. Not certified, not minted.")
+
+        st.subheader("Deterministic record")
+        render_record(result)
+
+        if verdict == "ADMISSIBLE":
+            cert = build_certificate_from_result(
                 asset_id=claim_id,
                 claim_text=claim_text,
                 source_name=source_name or "source.txt",
                 source_text=source_span,
-                gate_result=gate_result,
+                result=result,
+                judge=judge,
             )
             st.subheader("Certificate")
             st.write(f"Certificate hash: `{cert['header']['integrity']['sha256']}`")
@@ -277,7 +356,6 @@ with gate_tab:
                     except Exception as exc:
                         st.error(f"Story mint/register failed: {exc}")
                         st.stop()
-
                 cert = minted["cert"]
                 resp = minted["response"]
                 tx_hash = resp.get("tx_hash", "")
@@ -288,6 +366,12 @@ with gate_tab:
                 st.write(f"Transaction ID: `{tx_hash}`")
                 st.write(f"Certificate IPFS URI: `{minted['cert_cid']}`")
                 st.write(f"NFT metadata IPFS URI: `{minted['nft_cid']}`")
+                cert_gateway = ipfs_gateway_url(minted["cert_cid"])
+                nft_gateway = ipfs_gateway_url(minted["nft_cid"])
+                if cert_gateway:
+                    st.markdown(f"🔗 [View certificate on IPFS gateway]({cert_gateway})")
+                if nft_gateway:
+                    st.markdown(f"🔗 [View NFT metadata on IPFS gateway]({nft_gateway})")
                 if tx_url:
                     st.markdown(f"🔗 [View transaction on Storyscan]({tx_url})")
             else:
@@ -300,22 +384,11 @@ with gate_tab:
                 mime="application/json",
             )
         else:
-            st.error("BLOCKED")
             st.info("No certificate was created and no token was minted.")
 
-        usage_summary = usage_text(usage)
+        usage_summary = usage_text(getattr(judge, "last_usage", None))
         if usage_summary:
             st.caption("Claude usage — " + usage_summary)
-
-        for claim in gate_result["claims"]:
-            st.subheader(claim["claimId"])
-            st.write(f"Claim result: {claim['claimResult']}")
-            for condition_key, finding in claim["conditions"].items():
-                label = f"{condition_key}: {finding['result']}"
-                with st.expander(label, expanded=condition_key == "C1_sourceGrounding"):
-                    if "score" in finding:
-                        st.write(f"Score: {finding['score']}")
-                    st.write(finding["reason"])
 
 with verify_tab:
     cert_file = st.file_uploader("Certificate (cert.json)", type="json")
@@ -329,7 +402,7 @@ with verify_tab:
 
         cert = json.load(cert_file)
         sources, source_notes = certificate_sources(cert, source_files)
-        result = verify.full_verify(cert, asset_text.encode(), sources)
+        result = cert_verify.full_verify(cert, asset_text.encode(), sources)
         result.setdefault("detail", {}).setdefault("inputs", {}).setdefault("notes", []).extend(source_notes)
 
         if result.get("verified"):
