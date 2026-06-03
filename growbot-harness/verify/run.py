@@ -23,6 +23,7 @@ from .deterministic import (
     check_claim,
     fnum,
 )
+from .extract import demote_if_aspirational
 from .normalize import normalize
 
 
@@ -64,6 +65,9 @@ def verify_claim(
     config = config or Config.load()
     extractions = judge.extract_n(claim_text, source_text, n)
     claim0, source0 = extractions[0]
+    # Deterministic, judge-independent: a goal figure ("aim as high as 60%") is not
+    # evidence -> relabel ASPIRATIONAL so check_claim abstains. Re-scans the span.
+    source0 = demote_if_aspirational(source0)
     tol = config.rounding_tol(claim0.metric, claim0.value) if config.known_metric(claim0.metric) else 0.0
 
     base = {

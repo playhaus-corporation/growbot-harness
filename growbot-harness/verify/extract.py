@@ -19,9 +19,11 @@ This module imports with no API key present; ClaudeJudge only needs one when cal
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 from .config import Config
 from .deterministic import (
+    ASPIRATIONAL,
     AVERAGE,
     MAX_OBSERVED,
     MIN_OBSERVED,
@@ -43,6 +45,43 @@ _LOWER_CUES = ("at least", "or more", "more than", "over ", "north of", "upwards
 _AVERAGE_CUES = ("average", "on average", "avg", "mean")
 _MIN_CUES = ("at least", "minimum", "at minimum", "no fewer", "guaranteed floor")
 _MAX_CUES = ("as high as", "peaked", "maximum", "max ", "as much as")
+
+# A trailing "+" that turns a number into a floor: "1,000+", "30%+", "$5 +".
+# NOTE: must allow an optional unit char (e.g. "%") BETWEEN the digits and the "+",
+# or "30%+" is silently read as a POINT and a guaranteed-floor claim sails through.
+_PLUS_FLOOR = re.compile(r"\d[\d,]*\s*%?\s*\+")
+
+# A figure near a GOAL cue is an aspiration, not evidence; a figure near an ACHIEVED
+# cue is a real result. When both sit by the same figure, achievement wins (the copy
+# says it actually happened). Policy: a goal figure -> abstain (NEEDS_REVIEW).
+_ASPIRATION_CUES = (
+    "aim", "target", "goal", "projected", "on track", "designed to",
+    "potential", "could see",
+)
+_ACHIEVEMENT_CUES = ("saw", "achieved", "accomplished", "succeeded")
+
+
+def _aspirational(window_text: str) -> bool:
+    """True if the figure is framed as a goal AND not asserted as an achieved result."""
+    goal = any(cue in window_text for cue in _ASPIRATION_CUES)
+    achieved = any(cue in window_text for cue in _ACHIEVEMENT_CUES)
+    return goal and not achieved
+
+
+def demote_if_aspirational(source: SourceRecord) -> SourceRecord:
+    """
+    Judge-independent deterministic guard. Applied in run.verify_claim to ANY judge's
+    output (LexicalJudge or ClaudeJudge), it re-scans the recorded source_span around
+    the strongest figure: if that figure is a goal and not an achieved result, relabel
+    the source ASPIRATIONAL so the core abstains. It re-derives this from the span, so
+    it never trusts the extractor's own kind classification.
+    """
+    if source.kind == ASPIRATIONAL:
+        return source
+    span = source.source_span or ""
+    if _aspirational(_window(span, _headline_match(span))):
+        return replace(source, kind=ASPIRATIONAL)
+    return source
 
 
 def _to_float(raw: str) -> float:
@@ -115,7 +154,7 @@ def _detect_comparator(text: str, headline=None) -> Cmp:
     if any(cue in win for cue in _UPPER_CUES):
         return Cmp.UPPER_BOUND
     # a trailing "+" on the number ("1,000+", "30%+") or an explicit floor phrase
-    if re.search(r"\d\s*\+", win) or any(cue in win for cue in _LOWER_CUES):
+    if _PLUS_FLOOR.search(win) or any(cue in win for cue in _LOWER_CUES):
         return Cmp.LOWER_BOUND
     return Cmp.POINT
 
@@ -130,7 +169,7 @@ def _detect_source_kind(text: str, headline=None) -> str:
     win = _window(text, headline)
     if any(cue in win for cue in _AVERAGE_CUES):
         return AVERAGE
-    if any(cue in win for cue in _MIN_CUES) or re.search(r"\d\s*\+", win):
+    if any(cue in win for cue in _MIN_CUES) or _PLUS_FLOOR.search(win):
         return MIN_OBSERVED
     if any(cue in win for cue in _MAX_CUES):
         return MAX_OBSERVED
@@ -174,6 +213,8 @@ class LexicalJudge:
             value: float | list[float] = [min(nums), max(nums)]
         else:
             value = max(nums) if nums else float("nan")
+        # Aspiration ("aim as high as 60%") is demoted to NEEDS_REVIEW by the
+        # judge-independent guard demote_if_aspirational(), applied in run.verify_claim.
         ref_metric = metric or "unknown"
         unit = _detect_unit(source_text, metric, self.config) if metric else "?"
         return SourceRecord(
@@ -203,7 +244,7 @@ Given a CLAIM and its cited SOURCE, return a single JSON object, no prose, no co
 
 {
   "claim":  {"metric": str, "value": number, "comparator": "POINT|UPPER_BOUND|LOWER_BOUND", "unit": str, "span": str},
-  "source": {"metric": str, "value": number, "kind": "POINT|RANGE|MAX_OBSERVED|MIN_OBSERVED|AVERAGE", "unit": str, "span": str}
+  "source": {"metric": str, "value": number, "kind": "POINT|RANGE|MAX_OBSERVED|MIN_OBSERVED|AVERAGE|ASPIRATIONAL", "unit": str, "span": str}
 }
 
 Rules:
@@ -211,6 +252,13 @@ Rules:
 - For a RANGE source, set "value" to [lo, hi].
 - Use the unit exactly as written ("%", "pp" for percentage points, "$/month", "$/year", "$/lead", or a count noun).
 - Never conflate "%" with "percentage points".
+- Distinguish a GOAL from a RESULT. If the source figure is framed as a target or aspiration
+  ("aim", "target", "goal", "projected", "on track to", "designed to", "potential", "could reach/see"),
+  set the source "kind" to "ASPIRATIONAL" — it is NOT evidence. Words like "saw", "achieved",
+  "accomplished", "succeeded", "reached" mark an achieved result (use POINT/AVERAGE/MAX_OBSERVED/etc.).
+  A figure that is both aimed-for AND achieved counts as achieved.
+- Put the exact quoted source text in "span" (including any goal/achieved wording) — a deterministic
+  guard re-reads it, so the span must contain the words that justify the kind.
 - metric is a short snake_case key naming the quantity (e.g. cac_reduction_pct, annual_savings_usd, clients_count).
 - Report only. The verdict is computed elsewhere by a deterministic function.
 
@@ -221,7 +269,7 @@ SOURCE:
 {{SOURCE}}"""
 
 _CMP_MAP = {"POINT": Cmp.POINT, "UPPER_BOUND": Cmp.UPPER_BOUND, "LOWER_BOUND": Cmp.LOWER_BOUND}
-_KIND_SET = {POINT, RANGE, MAX_OBSERVED, MIN_OBSERVED, AVERAGE}
+_KIND_SET = {POINT, RANGE, MAX_OBSERVED, MIN_OBSERVED, AVERAGE, ASPIRATIONAL}
 
 
 class ClaudeJudge:
@@ -262,8 +310,13 @@ class ClaudeJudge:
             else self.config.polarity("cac_reduction_pct")
         claim = ClaimRecord(metric, polarity, float(c["value"]), cmp_, c["unit"], c.get("span", ""))
         kind = s["kind"] if s["kind"] in _KIND_SET else POINT
-        sval = s["value"]
-        sval = [float(x) for x in sval] if isinstance(sval, list) else float(sval)
+        sval = s.get("value")
+        if isinstance(sval, list):
+            sval = [float(x) for x in sval]
+        elif sval is None:                 # e.g. an ASPIRATIONAL goal with no observed figure
+            sval = float("nan")
+        else:
+            sval = float(sval)
         source = SourceRecord(s["metric"], sval, kind, s["unit"], s.get("span", ""))
         return claim, source
 

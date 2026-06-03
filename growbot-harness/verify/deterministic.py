@@ -45,6 +45,10 @@ RANGE = "RANGE"
 MAX_OBSERVED = "MAX_OBSERVED"
 MIN_OBSERVED = "MIN_OBSERVED"
 AVERAGE = "AVERAGE"
+# A figure stated as a GOAL, not an observed result ("we aim as high as 60%"). It
+# documents nothing, so it licenses no claim — check_claim abstains on it. Set by the
+# judge-independent guard extract.demote_if_aspirational (applied in run.verify_claim).
+ASPIRATIONAL = "ASPIRATIONAL"
 
 
 @dataclass(frozen=True)
@@ -102,6 +106,9 @@ def check_claim(c: ClaimRecord, s: SourceRecord, tol: float) -> tuple[Verdict, s
     rounding allowance (see config.rounding_tol): a claim may round in its favor by
     up to tol, but never exceed the source beyond that in the aggressive direction.
     """
+    if s.kind == ASPIRATIONAL:
+        return Verdict.NEEDS_REVIEW, "source figure is a stated goal/aspiration, not observed evidence"
+
     if c.metric != s.metric or c.unit != s.unit:
         return Verdict.NEEDS_REVIEW, "unit/metric not reconciled"
 
