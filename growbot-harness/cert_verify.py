@@ -163,14 +163,23 @@ def verify_anchor(cert: dict, client=None) -> dict:
 
 
 def full_verify(cert: dict, ad_bytes: bytes, sources: dict[str, bytes],
-                client=None) -> dict:
-    """Run integrity, input, and live anchor verification."""
+                client=None, as_of=None) -> dict:
+    """Run integrity, input, and live anchor verification, plus the time-in-force check.
+
+    `verified` stays the three *authenticity* layers (integrity + inputs + anchor), so
+    existing callers are unchanged. Time-in-force is a separate axis: a cert can be
+    byte-perfect and on-chain yet be outside its validity window. `inForce`/`validityStatus`
+    report that; the consumer decides whether an expired-but-authentic cert is usable.
+    """
     inputs = cert_mod.verify_against_inputs(cert, ad_bytes, sources)
     anchor = verify_anchor(cert, client)
+    validity = cert_mod.check_validity(cert, as_of)
     return {
         "integrity": inputs["integrityOk"],
         "inputs": inputs["ok"],
         "anchor": anchor["ok"],
         "verified": inputs["ok"] and anchor["ok"],
-        "detail": {"inputs": inputs, "anchor": anchor},
+        "inForce": validity["inForce"],
+        "validityStatus": validity["status"],
+        "detail": {"inputs": inputs, "anchor": anchor, "validity": validity},
     }

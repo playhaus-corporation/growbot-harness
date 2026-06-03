@@ -107,6 +107,12 @@ def main():
             + ". Provide them directly or via --registration."
         )
 
+    # Keep the on-chain PIL `expiration` equal to the cert's validity expiry (fill 0 only).
+    expiration = cert.get("license", {}).get("validity", {}).get("notAfterEpoch", 0)
+    terms = pil_terms.get("terms") if isinstance(pil_terms, dict) else None
+    if isinstance(terms, dict) and expiration and not terms.get("expiration"):
+        terms["expiration"] = int(expiration)
+
     anchored_cert, resp = register(cert, ip_cid, nft_cid, nft_hash, pil_terms)
     tx_hash = resp["tx_hash"]
     tx_id = tx_hash

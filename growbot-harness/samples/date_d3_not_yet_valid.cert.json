@@ -1,0 +1,73 @@
+{
+  "header": {
+    "specName": "growbot Admissibility Certificate (applied-layer, modeled on SC-AS)",
+    "specVersion": "0.1.0",
+    "documentClass": "APPLIED-CERT",
+    "basis": "SC-AS v1.0 verification discipline, Coherence Research (J. Carroll)",
+    "basisScope": "applied-layer extension; not canonical SC-AS; not an RCC; admissibility != compliance",
+    "issuer": "growbot-harness",
+    "issuedAt": "2026-06-03T01:49:18Z",
+    "integrity": {
+      "alg": "sha256",
+      "canon": "json:sort_keys,utf8,compact;exclude=header.integrity.sha256,approval.signature,approval.signedAt,anchor",
+      "sha256": "bb580a5730611113c87d8f6be65dce2e795b185470c82cf0f3248875e4c400da"
+    }
+  },
+  "subject": {
+    "assetId": "d3",
+    "mediaType": "text/plain",
+    "sha256": "ece8017d87847ae8cdeacdb503859fb031ae4cc51835994762338eccd9b117a9",
+    "contentUri": null
+  },
+  "sources": [
+    {
+      "name": "source.txt",
+      "sha256": "ddd55edfa3d646808f5ac6469766afc6e8ad3c8c7cbcf496d31bc2b6a15baa60",
+      "uri": null
+    }
+  ],
+  "method": {
+    "model": "lexical-standin (offline)",
+    "promptTemplateHash": "sha256:none",
+    "temperature": 0,
+    "embeddingModel": null,
+    "conditionsVersion": "C1-C3 v0.1",
+    "tolerances": {}
+  },
+  "findings": {
+    "claims": [
+      {
+        "claimId": "d3",
+        "claimText": "We cut CAC 30%.",
+        "sourceRef": {
+          "name": "source.txt",
+          "span": "We reduced CAC by 30%."
+        },
+        "claimResult": "ADMISSIBLE"
+      }
+    ]
+  },
+  "verdict": {
+    "result": "ADMISSIBLE",
+    "claimsTotal": 1,
+    "claimsAdmissible": 1
+  },
+  "license": {
+    "framework": "Story PIL",
+    "terms": "paid social; US; a pre-dated certificate, effective later",
+    "validity": {
+      "notBefore": "2026-07-03T01:49:18Z",
+      "notAfter": "2027-07-03T01:49:18Z",
+      "notAfterEpoch": 1814579358,
+      "validityDays": 365.0,
+      "basis": "factual claims attested as grounded in the cited source data as of notBefore; certificate valid through notAfter -- after which a licensee should re-verify against the then-current source. this is a time-bound admissibility attestation, not a warranty of truth; admissibility != legal compliance."
+    },
+    "licenseTermsId": null
+  },
+  "approval": {
+    "approver": "0xDEMO00000000000000000000000000000000bEEF",
+    "signature": "",
+    "signedAt": null
+  },
+  "anchor": null
+}

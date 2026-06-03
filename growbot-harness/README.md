@@ -1,6 +1,6 @@
 # growbot harness
 
-Growbot is a Python demo that checks AI-generated ad claims against source data,
+Growbot is a Python demo that checks ad claims against source data,
 issues a hash-bound admissibility certificate for claims that pass, and can anchor
 that certificate as Story Protocol IP metadata.
 
@@ -41,9 +41,9 @@ These run with no keys and no network:
 
 ```bash
 python certificate.py                      # cert hashing self-test
-python gate.py                             # legacy C1-C3 self-test
+python gate.py                             # C1-C3 self-test
 python -m pytest tests/test_deterministic.py -q   # deterministic verifier acceptance suite
-python cli.py --offline --dry-run --sample s3     # the hero refusal, end to end
+python cli.py --offline --dry-run --sample s3     # deterministic refusal, end to end
 ```
 
 ## Deterministic quantitative verifier (`verify/`)
@@ -83,15 +83,15 @@ the certificate, so a re-run on a different version is a different, self-describ
 
 ### Flags
 
-- `--offline` — use the deterministic `LexicalJudge` instead of Claude, and skip the
+- `--offline` — use the deterministic `LexicalJudge`, and skip the
   chain. No API key, no network; this is what the test suite and `pytest` exercise.
-- `--dry-run` — run the full pipeline (real Claude extraction) and assemble the
+- `--dry-run` — run the full pipeline (model-backed extraction) and assemble the
   certificate + NFT metadata, but do not pin to IPFS or sign any Story transaction.
 - `--sample s1..s6` — run a built-in fixture from `verify/samples.py` instead of files.
 
 ```bash
 python cli.py --offline --dry-run --sample s3            # deterministic, no key
-python cli.py samples/s1.txt --dry-run --out /tmp/c.json # real Claude extraction, no mint
+python cli.py samples/s1.txt --dry-run --out /tmp/c.json # model-backed extraction, no mint
 ```
 
 ## Streamlit Demo

@@ -50,7 +50,7 @@ def test_sample_table(sample_id):
     assert result["result"] == expected, f"{sample_id}: {result['reason']}"
 
 
-def test_s3_hero_reason_is_arithmetic():
+def test_s3_reason_is_arithmetic():
     """The demo block: the refusal must be the arithmetic, not an opinion."""
     claim_text, source_text, expected, _ = SAMPLES["s3"]
     result = verify_claim(claim_text, source_text, JUDGE, config=CONFIG)

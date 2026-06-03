@@ -9,7 +9,7 @@ reproducible by anyone holding only the Python standard library.
 The LLM never reaches this module. It produces ClaimRecord / SourceRecord upstream
 (extract.py); everything here is arithmetic over those numbers.
 
-Rules (see growbot-rule-table.md §3-§4):
+Rules:
   A  Magnitude match — POINT claim vs POINT/AVERAGE source.
   B  Bound vs evidence — UPPER_BOUND "up to X" needs the source to *reach* X.
   C  Unit/scope normalization — runs in normalize.py *before* this module.

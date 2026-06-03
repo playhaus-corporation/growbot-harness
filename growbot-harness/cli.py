@@ -18,7 +18,7 @@ Flags:
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import sys
@@ -39,8 +39,14 @@ ENV_PATH = Path(__file__).with_name(".env")
 load_dotenv(dotenv_path=ENV_PATH)
 DEFAULT_SOURCE_PATH = Path(__file__).parent / "samples" / "source_case_study_q1_2026.txt"
 
-DEFAULT_LICENSE_TEXT = f"paid social; US; through {date.today().year + 1}-{date.today().month}-{date.today().day}; no derivative claims"
+DEFAULT_VALID_DAYS = certificate.DEFAULT_VALIDITY_DAYS
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+
+def _default_license_text(valid_days: int) -> str:
+    """Human-readable terms whose 'through' date matches the structured validity window."""
+    end = (datetime.now(timezone.utc) + timedelta(days=valid_days)).date().isoformat()
+    return f"paid social; US; through {end}; no derivative claims"
 
 # Story Aeneid (chainId 1315) protocol addresses. The defaults are the confirmed
 # Aeneid deployment values; override via .env to retarget without a code change.
@@ -134,13 +140,13 @@ def _approver_address() -> str:
     return "0xDEMO00000000000000000000000000000000bEEF"
 
 
-def _default_pil_terms(uri: str = "") -> dict:
+def _default_pil_terms(uri: str = "", expiration: int = 0) -> dict:
     return {
         "terms": {
             "transferable": True,
             "royalty_policy": ROYALTY_POLICY_LAP,
             "default_minting_fee": 0,
-            "expiration": 0,
+            "expiration": int(expiration),
             "commercial_use": True,
             "commercial_attribution": True,
             "commercializer_checker": ZERO_ADDRESS,
@@ -168,9 +174,21 @@ def _default_pil_terms(uri: str = "") -> dict:
     }
 
 
-def _load_pil_terms(path: Path | None) -> dict:
+def _apply_expiration(pil_terms: dict, epoch: int) -> dict:
+    """Bind the on-chain PIL `expiration` to the cert's validity window.
+
+    Only fills an unset (0) expiration, so an explicit operator-provided value always
+    wins. Story PIL `expiration` is a Unix-seconds timestamp; 0 means perpetual.
+    """
+    terms = pil_terms.get("terms")
+    if isinstance(terms, dict) and not terms.get("expiration"):
+        terms["expiration"] = int(epoch)
+    return pil_terms
+
+
+def _load_pil_terms(path: Path | None, expiration: int = 0) -> dict:
     if not path:
-        return _default_pil_terms(os.environ.get("PIL_TERMS_URI", ""))
+        return _default_pil_terms(os.environ.get("PIL_TERMS_URI", ""), expiration)
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
     if "args" in data:
@@ -193,7 +211,7 @@ def _add_display_metadata(cert: dict, *, ad_text: str, asset_id: str) -> dict:
     cert.update(
         {
             "title": f"growbot admissible ad claim: {asset_id}",
-            "description": "AI-generated ad copy passed through the growbot admissibility gate.",
+            "description": "Ad copy passed through the growbot admissibility gate.",
             "creators": [
                 {
                     "name": "Playhaus",
@@ -211,15 +229,25 @@ def _add_display_metadata(cert: dict, *, ad_text: str, asset_id: str) -> dict:
 
 
 def _build_nft_metadata(cert: dict) -> dict:
+    validity = cert.get("license", {}).get("validity", {})
+    attributes = [
+        {"trait_type": "Gate verdict", "value": cert["verdict"]["result"]},
+        {"trait_type": "Certificate hash", "value": cert["header"]["integrity"]["sha256"]},
+        {"trait_type": "Asset hash", "value": cert["subject"]["sha256"]},
+    ]
+    if validity.get("notBefore") and validity.get("notAfter"):
+        # X.509-style window, surfaced on-chain so a licensee sees the term on the explorer.
+        attributes += [
+            {"trait_type": "Valid from", "value": validity["notBefore"]},
+            {"trait_type": "Valid through", "value": validity["notAfter"]},
+            {"display_type": "date", "trait_type": "Valid through (unix)",
+             "value": validity["notAfterEpoch"]},
+        ]
     return {
         "name": cert["title"],
         "description": cert["description"],
         "image": "",
-        "attributes": [
-            {"trait_type": "Gate verdict", "value": cert["verdict"]["result"]},
-            {"trait_type": "Certificate hash", "value": cert["header"]["integrity"]["sha256"]},
-            {"trait_type": "Asset hash", "value": cert["subject"]["sha256"]},
-        ],
+        "attributes": attributes,
     }
 
 
@@ -266,7 +294,9 @@ def main() -> int:
     parser.add_argument("--source", type=Path, help="Source text file for the cited claim")
     parser.add_argument("--sample", help="Run a built-in verify.samples fixture (s1..s6) instead of files")
     parser.add_argument("--asset-id", help="Certificate asset id; defaults to the ad filename stem")
-    parser.add_argument("--license-terms", default=DEFAULT_LICENSE_TEXT, help="Human-readable license terms")
+    parser.add_argument("--license-terms", default=None, help="Human-readable license terms")
+    parser.add_argument("--valid-days", type=int, default=DEFAULT_VALID_DAYS,
+                        help="Certificate validity window length in days (cert validity + Story PIL expiration)")
     parser.add_argument("--pil-terms", type=Path, help="JSON file containing one Story PIL terms object")
     parser.add_argument("--out", type=Path, help="Optional path for the final certificate JSON")
     parser.add_argument("--offline", action="store_true", help="Use the deterministic LexicalJudge; skip the chain")
@@ -285,6 +315,7 @@ def main() -> int:
         _print_refusal(asset_id, result)
         return 1
 
+    license_text = args.license_terms or _default_license_text(args.valid_days)
     claim_entry = _cert_claim_entry(asset_id, claim_text, source_name, result)
     cert = certificate.build_certificate(
         asset_text=claim_text,
@@ -297,37 +328,37 @@ def main() -> int:
         }],
         method=_method_fingerprint(judge, config),
         claims=[claim_entry],
-        license_terms={"terms": args.license_terms},
+        license_terms={"terms": license_text},
         approver=_approver_address(),
+        valid_days=args.valid_days,
     )
     _add_display_metadata(cert, ad_text=claim_text, asset_id=asset_id)
     certificate.finalize(cert)
 
     nft_metadata = _build_nft_metadata(cert)
     nft_hash = _json_sha256(nft_metadata)
+    window = cert["license"]["validity"]
 
     print("ADMISSIBLE")
     print(f"normalized_comparison: {result['normalized_comparison']}")
     print(f"certificate_hash: {cert['header']['integrity']['sha256']}")
     print(f"nft_metadata_hash: {nft_hash}")
+    print(f"validity_window: {window['notBefore']} -> {window['notAfter']} "
+          f"(PIL expiration={window['notAfterEpoch']})")
 
     if args.offline or args.dry_run:
         why = "offline" if args.offline else "dry_run"
         print(f"{why}: prepared certificate and NFT metadata; skipped Pinata and Story registration")
-        # TODO(privacy): before pinning publicly, optionally emit a REDACTED cert here
-        # (hashes + verdicts + normalized_comparison, source spans removed) and hand the
-        # full cert to the asset-holder to verify locally against the same SHA-256 anchor.
         if args.out:
             _write_json(args.out, cert)
             print(f"certificate: {args.out}")
         return 0
 
     _ensure_live_env()
-    # TODO(privacy): pin a redacted public cert instead of the full cert if source spans
-    # are proprietary; the on-chain anchor is the SHA-256 of the cert either way.
     cert_cid = pinata.pin_json(cert, f"{asset_id}-admissibility-certificate.json")
     nft_cid = pinata.pin_json(nft_metadata, f"{asset_id}-nft-metadata.json")
-    pil_terms = _load_pil_terms(args.pil_terms)
+    # On-chain PIL license expiry == the certificate's validity expiry.
+    pil_terms = _apply_expiration(_load_pil_terms(args.pil_terms), window["notAfterEpoch"])
 
     anchored_cert, resp = story_register.register(cert, cert_cid, nft_cid, nft_hash, pil_terms)
 

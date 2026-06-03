@@ -2,10 +2,8 @@
 verify.samples · canonical demo fixtures (the prompt's authoritative s1-s6 table)
 =================================================================================
 
-These are the verify-layer samples, keyed by the IDs in growbot-claude-code-prompt.md
-/ growbot-rule-table.md §8. They are intentionally SEPARATE from gate.SAMPLES and the
-samples/*.txt files, which use the same ids with the older C1-C3 meanings — do not
-conflate the two numbering schemes. s3 is the hero: "up to 50%" over a 30% average.
+These are verify-layer fixtures keyed by `s1..s6`. They are intentionally separate
+from `gate.SAMPLES` and `samples/*.txt`, which reuse IDs for the older C1-C3 flow.
 """
 
 from __future__ import annotations

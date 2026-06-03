@@ -16,7 +16,7 @@ Run with:  streamlit run app.py
 judgment — the refusal you see on an overstatement is the arithmetic, on screen.
 """
 from pathlib import Path
-from datetime import date
+from datetime import datetime, timedelta, timezone
 import json
 import os
 
@@ -34,8 +34,13 @@ from verify.run import verify_claim
 ENV_PATH = Path(__file__).with_name(".env")
 load_dotenv(dotenv_path=ENV_PATH)
 STORYSCAN_TX = "https://aeneid.storyscan.xyz/tx/"
-DEFAULT_LICENSE_TEXT = f"paid social; US; through {date.today().year + 1}-{date.today().month}-{date.today().day}; no derivative claims"
+DEFAULT_VALID_DAYS = certificate.DEFAULT_VALIDITY_DAYS
 CONFIG = Config.load()
+
+
+def default_license_text(valid_days: int) -> str:
+    end = (datetime.now(timezone.utc) + timedelta(days=valid_days)).date().isoformat()
+    return f"paid social; US; through {end}; no derivative claims"
 
 # (key, label, blurb, detail_key) — integrity rides inside the inputs report
 # (full_verify exposes it as inputs["integrityOk"]), so it has no own detail block.
@@ -66,7 +71,7 @@ def anthropic_client():
 
 
 def make_judge(offline: bool):
-    """LexicalJudge (deterministic, no key) offline; ClaudeJudge (extraction-only) live."""
+    """LexicalJudge (deterministic, no key) offline; model extraction live."""
     return LexicalJudge(CONFIG) if offline else ExtractionJudge(anthropic_client(), CONFIG)
 
 
@@ -125,7 +130,7 @@ def add_display_metadata(cert: dict, *, ad_text: str, asset_id: str) -> dict:
     cert.update(
         {
             "title": f"growbot admissible ad claim: {asset_id}",
-            "description": "AI-generated ad copy passed through the growbot admissibility gate.",
+            "description": "Ad copy passed through the growbot admissibility gate.",
             "creators": [
                 {
                     "name": "Playhaus",
@@ -144,7 +149,7 @@ def add_display_metadata(cert: dict, *, ad_text: str, asset_id: str) -> dict:
 
 def build_certificate_from_result(
     *, asset_id: str, claim_text: str, source_name: str, source_text: str,
-    result: dict, judge,
+    result: dict, judge, valid_days: int = DEFAULT_VALID_DAYS,
 ) -> dict:
     cert = certificate.build_certificate(
         asset_text=claim_text,
@@ -157,8 +162,9 @@ def build_certificate_from_result(
         }],
         method=method_fingerprint(judge, CONFIG),
         claims=[cert_claim_entry(asset_id, claim_text, source_name, result)],
-        license_terms={"terms": DEFAULT_LICENSE_TEXT},
+        license_terms={"terms": default_license_text(valid_days)},
         approver=approver_address(),
+        valid_days=valid_days,
     )
     add_display_metadata(cert, ad_text=claim_text, asset_id=asset_id)
     certificate.finalize(cert)
@@ -179,7 +185,9 @@ def mint_certificate_on_story(cert: dict, *, asset_id: str) -> dict:
     nft_hash = cli_helpers._json_sha256(nft_metadata)
     cert_cid = pinata.pin_json(cert, f"{asset_id}-admissibility-certificate.json")
     nft_cid = pinata.pin_json(nft_metadata, f"{asset_id}-nft-metadata.json")
-    pil_terms = cli_helpers._load_pil_terms(None)
+    # On-chain PIL license expiry == the certificate's validity expiry.
+    expiration = cert.get("license", {}).get("validity", {}).get("notAfterEpoch", 0)
+    pil_terms = cli_helpers._apply_expiration(cli_helpers._load_pil_terms(None), expiration)
     anchored_cert, resp = story_register.register(cert, cert_cid, nft_cid, nft_hash, pil_terms)
     return {
         "cert": anchored_cert,
@@ -285,8 +293,8 @@ def render_record(result: dict) -> None:
 
 st.set_page_config(page_title="growbot · verify", page_icon="✅")
 st.title("growbot — gate and verify")
-st.caption("Test, don't trust. The verdict is pure arithmetic over extracted numbers — "
-           "no LLM in the judgment — and verification never routes through the agency.")
+st.caption("The verdict is deterministic arithmetic over extracted numbers, and "
+           "verification runs independently of the issuer.")
 
 gate_tab, verify_tab = st.tabs(["Run Gate", "Verify Certificate"])
 
@@ -294,7 +302,7 @@ with gate_tab:
     sample_options = {"custom": ("custom", "", "")}
     sample_options.update({sid: (sid, claim, source) for sid, (claim, source, _exp, _rule) in verify_samples.SAMPLES.items()})
     sample_id = st.selectbox("Bundled sample", list(sample_options), index=list(sample_options).index("s3"),
-                             help="s3 is the hero: 'up to 50%' against a 30% average → INADMISSIBLE.")
+                             help="s3 demonstrates an overstatement: 'up to 50%' against a 30% average.")
     default_id, default_claim, default_source = sample_options[sample_id]
     claim_id = st.text_input("Claim ID", value=default_id)
     claim_text = st.text_area("Claim", value=default_claim, height=100)
@@ -304,7 +312,13 @@ with gate_tab:
     offline = st.checkbox(
         "Offline (deterministic LexicalJudge — no API key, no network)",
         value=True,
-        help="On: regex/parse extraction, fully reproducible. Off: Claude does the N=3 extraction (records only, never a verdict).",
+        help="On: regex/parse extraction, fully reproducible. Off: model-backed N=3 extraction (records only, never a verdict).",
+    )
+    valid_days = st.number_input(
+        "Validity window (days)",
+        min_value=1, max_value=3650, value=DEFAULT_VALID_DAYS, step=30,
+        help="How long the certificate is valid (X.509-style notBefore/notAfter). Written "
+             "into the signed cert and mirrored into the Story PIL `expiration` clock at mint.",
     )
     mint_live = st.checkbox(
         "Mint/register on Story if admissible",
@@ -314,7 +328,7 @@ with gate_tab:
     if mint_live:
         st.warning("Live mint is enabled. This will create a new Story testnet token if every claim is ADMISSIBLE.")
 
-    run_label = "Run Gate (offline)" if offline else "Run Gate with Claude"
+    run_label = "Run Gate (offline)" if offline else "Run Gate (model extraction)"
     if st.button(run_label, type="primary", disabled=not (claim_text.strip() and source_span.strip())):
         try:
             judge = make_judge(offline)
@@ -343,11 +357,17 @@ with gate_tab:
                 source_text=source_span,
                 result=result,
                 judge=judge,
+                valid_days=int(valid_days),
             )
             st.subheader("Certificate")
             st.write(f"Certificate hash: `{cert['header']['integrity']['sha256']}`")
             st.write(f"Approver wallet: `{cert['approval']['approver']}`")
             st.write(f"Asset hash: `{cert['subject']['sha256']}`")
+            window = cert.get("license", {}).get("validity", {})
+            st.write(
+                f"Certificate valid: `{window.get('notBefore')}` → `{window.get('notAfter')}` "
+                f"(PIL expiration `{window.get('notAfterEpoch')}`)"
+            )
 
             if mint_live:
                 with st.spinner("Pinning metadata and minting/registering on Story Aeneid..."):
@@ -388,7 +408,7 @@ with gate_tab:
 
         usage_summary = usage_text(getattr(judge, "last_usage", None))
         if usage_summary:
-            st.caption("Claude usage — " + usage_summary)
+            st.caption("Model usage — " + usage_summary)
 
 with verify_tab:
     cert_file = st.file_uploader("Certificate (cert.json)", type="json")
@@ -409,6 +429,15 @@ with verify_tab:
             st.success("VERIFIED — all three layers pass.")
         else:
             st.error("NOT VERIFIED — at least one layer failed.")
+
+        validity = result.get("detail", {}).get("validity", {})
+        status = validity.get("status", "NO_WINDOW")
+        if status == "VALID":
+            st.success(f"⏱ Certificate IN FORCE — {validity.get('reason')}")
+        elif status == "NO_WINDOW":
+            st.info("⏱ This certificate declares no validity window (older certificate format).")
+        else:
+            st.warning(f"⏱ Certificate {status} — {validity.get('reason')}")
 
         for key, label, blurb, detail_key in LAYERS:
             ok = passed(result, key)

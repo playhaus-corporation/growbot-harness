@@ -53,10 +53,18 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 CERT_SPEC_VERSION = "0.1.0"
 CONDITIONS_VERSION = "C1-C3 v0.1"
+
+# How long the certificate/license is valid, in days, when nothing overrides it.
+# The window is part of the signed cert substance (so it is tamper-evident) AND is
+# mirrored into Story PIL `expiration` at mint time (so the on-chain license clock
+# agrees with the certificate's representation). See build_certificate / check_validity.
+DEFAULT_VALIDITY_DAYS = 365
+
+_ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 # Fields excluded from the integrity hash, as (path) tuples.
 _HASH_EXCLUDED = (
@@ -65,6 +73,29 @@ _HASH_EXCLUDED = (
     ("approval", "signedAt"),
     ("anchor",),
 )
+
+
+# --------------------------------------------------------------------------- #
+# Time helpers (stdlib only; UTC, second precision, 'Z' suffix)
+# --------------------------------------------------------------------------- #
+def iso(dt: datetime) -> str:
+    """Format a datetime as a canonical UTC 'Z' string the verifier can re-parse."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime(_ISO_FMT)
+
+
+def parse_iso(value: str | None) -> datetime | None:
+    """Parse a UTC timestamp ('...Z') or a bare date ('YYYY-MM-DD'); None if unparseable."""
+    s = (value or "").strip()
+    if not s:
+        return None
+    for fmt in (_ISO_FMT, "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -140,6 +171,55 @@ def verify_integrity(cert: dict) -> bool:
     return bool(stamped) and stamped == compute_cert_hash(cert)
 
 
+def check_validity(cert: dict, as_of: datetime | None = None) -> dict:
+    """
+    Is the certificate within its validity window at `as_of` (default: now)?
+
+    A pure function of (cert, as_of): no network, no chain, stdlib only -- the same
+    'test, don't trust' discipline as the hash checks. This answers a *different*
+    question than verify_against_inputs: that one asks "is this cert authentic and
+    bound to these bytes?"; this one asks "is the attestation still in force, or has
+    its validity window lapsed (because the source data may have moved on)?"
+
+    Field/status vocabulary follows X.509 (notBefore/notAfter): neutral, time-only,
+    and deliberately NOT a contractual warranty of the claim's truth in the world.
+
+    status:
+      NO_WINDOW      -> cert declares no window (legacy cert); treated as in force
+      NOT_YET_VALID  -> as_of < notBefore
+      VALID          -> notBefore <= as_of <= notAfter
+      EXPIRED        -> as_of > notAfter (re-verify against current source)
+    """
+    validity = (cert.get("license") or {}).get("validity") or {}
+    not_before = parse_iso(validity.get("notBefore"))
+    not_after = parse_iso(validity.get("notAfter"))
+
+    as_of = as_of or datetime.now(timezone.utc)
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=timezone.utc)
+
+    report = {
+        "notBefore": validity.get("notBefore"),
+        "notAfter": validity.get("notAfter"),
+        "asOf": iso(as_of),
+        "status": "NO_WINDOW",
+        "inForce": True,
+        "reason": "certificate declares no validity window",
+    }
+    if not not_before and not not_after:
+        return report
+    if not_before and as_of < not_before:
+        report.update(status="NOT_YET_VALID", inForce=False,
+                      reason=f"certificate not valid until {validity.get('notBefore')}")
+    elif not_after and as_of > not_after:
+        report.update(status="EXPIRED", inForce=False,
+                      reason=f"certificate validity expired {validity.get('notAfter')}; re-verify against the current source")
+    else:
+        report.update(status="VALID", inForce=True,
+                      reason=f"certificate valid through {validity.get('notAfter')}")
+    return report
+
+
 def verify_against_inputs(cert: dict, asset_bytes: bytes,
                           sources: dict[str, bytes]) -> dict:
     """
@@ -173,7 +253,8 @@ def verify_against_inputs(cert: dict, asset_bytes: bytes,
 # --------------------------------------------------------------------------- #
 def build_certificate(*, asset_text: str, asset_id: str, media_type: str,
                       sources: list[dict], method: dict, claims: list[dict],
-                      license_terms: dict, approver: str) -> dict:
+                      license_terms: dict, approver: str,
+                      valid_days: int = DEFAULT_VALIDITY_DAYS) -> dict:
     """
     Assemble an unsigned, unstamped certificate from gate output.
 
@@ -181,11 +262,24 @@ def build_certificate(*, asset_text: str, asset_id: str, media_type: str,
     `sources` items: {name, sha256, uri?}
     A certificate is only built for ADMISSIBLE assets; the gate returns the same
     findings/verdict shape (un-signed, un-anchored) on the FAIL path and skips this.
+
+    Validity window (the certificate's time-in-force, X.509-style notBefore/notAfter):
+      - `notBefore` defaults to issuance; override via license_terms["validFrom"].
+      - `notAfter`  defaults to notBefore + `valid_days`; override via license_terms["validUntil"].
+    The window is part of the signed substance (inside the integrity hash), so the
+    agency cannot silently re-date the certificate after minting. `notAfterEpoch` is the
+    Unix value cli.py copies into Story PIL `expiration` so both clocks agree.
     """
     admissible = sum(1 for c in claims if c["claimResult"] == "ADMISSIBLE")
     verdict = "ADMISSIBLE" if admissible == len(claims) and claims else "NOT_ADMISSIBLE"
     if verdict != "ADMISSIBLE":
         raise ValueError("build_certificate is for ADMISSIBLE assets only; got NOT_ADMISSIBLE")
+
+    issued = datetime.now(timezone.utc)
+    not_before = parse_iso(license_terms.get("validFrom")) or issued
+    not_after = parse_iso(license_terms.get("validUntil")) or (not_before + timedelta(days=valid_days))
+    if not_after <= not_before:
+        raise ValueError("license validity window is empty: notAfter must be after notBefore")
 
     return {
         "header": {
@@ -195,7 +289,7 @@ def build_certificate(*, asset_text: str, asset_id: str, media_type: str,
             "basis": "SC-AS v1.0 verification discipline, Coherence Research (J. Carroll)",
             "basisScope": "applied-layer extension; not canonical SC-AS; not an RCC; admissibility != compliance",
             "issuer": "growbot-harness",
-            "issuedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "issuedAt": iso(issued),
             "integrity": {
                 "alg": "sha256",
                 "canon": "json:sort_keys,utf8,compact;exclude=header.integrity.sha256,approval.signature,approval.signedAt,anchor",
@@ -222,6 +316,18 @@ def build_certificate(*, asset_text: str, asset_id: str, media_type: str,
         "license": {
             "framework": "Story PIL",
             "terms": license_terms.get("terms"),
+            "validity": {
+                "notBefore": iso(not_before),
+                "notAfter": iso(not_after),
+                "notAfterEpoch": int(not_after.timestamp()),  # -> Story PIL `expiration`
+                "validityDays": round((not_after - not_before).total_seconds() / 86400, 4),
+                "basis": (
+                    "factual claims attested as grounded in the cited source data as of notBefore; "
+                    "certificate valid through notAfter -- after which a licensee should re-verify "
+                    "against the then-current source. this is a time-bound admissibility "
+                    "attestation, not a warranty of truth; admissibility != legal compliance."
+                ),
+            },
             "licenseTermsId": None,  # filled after PIL attach
         },
         "approval": {
@@ -280,13 +386,22 @@ if __name__ == "__main__":
     cert = build_certificate(
         asset_text=ASSET, asset_id="ad-2026-0001", media_type="text/plain",
         sources=sources, method=method, claims=claims,
-        license_terms={"terms": "paid social; US; through 2026-12-31; no derivative claims"},
+        license_terms={"terms": "paid social; US; no derivative claims"},
         approver="0xAGENCYWALLET000000000000000000000000bEEF",
+        valid_days=365,
     )
     finalize(cert)
 
     print("cert hash:        ", cert["header"]["integrity"]["sha256"])
     print("integrity ok:     ", verify_integrity(cert))
+
+    window = cert["license"]["validity"]
+    print("validity window:  ", window["notBefore"], "->", window["notAfter"],
+          f"(PIL expiration={window['notAfterEpoch']})")
+    issued_dt = parse_iso(cert["header"]["issuedAt"])
+    print("in force at issue:", check_validity(cert, issued_dt)["status"], "(expect VALID)")
+    print("in force +400d:   ", check_validity(cert, issued_dt + timedelta(days=400))["status"], "(expect EXPIRED)")
+    print("in force -1d:     ", check_validity(cert, issued_dt - timedelta(days=1))["status"], "(expect NOT_YET_VALID)")
 
     rep = verify_against_inputs(cert, ASSET.encode("utf-8"), {"case-study-q1-2026.md": SOURCE.encode("utf-8")})
     print("inputs match:     ", rep["ok"])
