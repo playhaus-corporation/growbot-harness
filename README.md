@@ -47,15 +47,13 @@ suite below).
   discipline*: deterministic checks, abstention over guessing, low-variance
   verdicts. This is an applied admissibility check, not canonical SC-AS.
 
-The verifier is designed around "test, don't trust":
+### How to verify ("test, don't trust")
 
-- recompute the certificate integrity hash locally
-- recompute asset and source hashes from raw inputs
-- read the Story Aeneid testnet anchor through a public explorer API
+- recompute the certificate integrity hash locally (`integrity`)
+- recompute asset and source hashes from raw inputs (`inputs`)
+- re-read the Story Aeneid anchor and check the on-chain hash (`anchor`)
 
-This is an applied-layer admissibility check inspired by SC-AS verification
-discipline. It is not canonical SC-AS, it is not an RCC, and admissibility is not
-legal compliance.
+`cert_verify.full_verify` runs all three; the SC-AS scoping above is stated once and still holds.
 
 ## Project Layout
 
